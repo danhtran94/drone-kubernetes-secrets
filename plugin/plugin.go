@@ -11,13 +11,14 @@ import (
 	"github.com/drone/drone-go/drone"
 	"github.com/drone/drone-go/plugin/secret"
 
-	"github.com/ericchiang/k8s"
-	"github.com/ericchiang/k8s/apis/core/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // New returns a new secret plugin that sources secrets
 // from the Kubernetes secrets manager.
-func New(client *k8s.Client, namespace string) secret.Plugin {
+func New(client *kubernetes.Clientset, namespace string) secret.Plugin {
 	return &plugin{
 		namespace: namespace,
 		client:    client,
@@ -25,7 +26,7 @@ func New(client *k8s.Client, namespace string) secret.Plugin {
 }
 
 type plugin struct {
-	client    *k8s.Client
+	client    *kubernetes.Clientset
 	namespace string
 }
 
@@ -42,8 +43,8 @@ func (p *plugin) Find(ctx context.Context, req *secret.Request) (*drone.Secret, 
 
 	// makes an api call to the kubernetes secrets manager and
 	// attempts to retrieve the secret at the requested path.
-	var secret v1.Secret
-	err := p.client.Get(ctx, p.namespace, path, &secret)
+	var secret *v1.Secret
+	secret, err := p.client.CoreV1().Secrets(p.namespace).Get(ctx, path, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func (p *plugin) Find(ctx context.Context, req *secret.Request) (*drone.Secret, 
 	// the user can filter out requets based on event type
 	// using the X-Drone-Events secret key. Check for this
 	// user-defined filter logic.
-	events := extractEvents(secret.Metadata.Annotations)
+	events := extractEvents(secret.ObjectMeta.Annotations)
 	if !match(req.Build.Event, events) {
 		return nil, errors.New("access denied: event does not match")
 	}
@@ -63,7 +64,7 @@ func (p *plugin) Find(ctx context.Context, req *secret.Request) (*drone.Secret, 
 	// the user can filter out requets based on repository
 	// using the X-Drone-Repos secret key. Check for this
 	// user-defined filter logic.
-	repos := extractRepos(secret.Metadata.Annotations)
+	repos := extractRepos(secret.ObjectMeta.Annotations)
 	if !match(req.Repo.Slug, repos) {
 		return nil, errors.New("access denied: repository does not match")
 	}

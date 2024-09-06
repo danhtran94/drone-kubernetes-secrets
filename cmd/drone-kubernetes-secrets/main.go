@@ -5,16 +5,18 @@
 package main
 
 import (
-	"io/ioutil"
 	"net/http"
+	"time"
 
 	"github.com/drone/drone-go/plugin/secret"
 	"github.com/drone/drone-kubernetes-secrets/plugin"
 
-	"github.com/ericchiang/k8s"
-	"github.com/ghodss/yaml"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -58,25 +60,47 @@ func main() {
 		logrus.StandardLogger(),
 	)
 
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	go func() {
+		for range ticker.C {
+			client, err := createClient(spec.Config)
+			if err != nil {
+				logrus.Fatal(err)
+			}
+
+			retry.OnError(retry.DefaultRetry, func(err error) bool {
+				return true
+			}, func() error {
+				handler = secret.Handler(
+					spec.Secret,
+					plugin.New(client, spec.Namespace),
+					logrus.StandardLogger(),
+				)
+				return nil
+			})
+		}
+	}()
+
 	logrus.Infof("server listening on address %s", spec.Address)
 
 	http.Handle("/", handler)
 	logrus.Fatal(http.ListenAndServe(spec.Address, nil))
 }
 
-func createClient(path string) (*k8s.Client, error) {
+func createClient(path string) (*kubernetes.Clientset, error) {
 	if path == "" {
-		return k8s.NewInClusterClient()
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, err
+		}
+		return kubernetes.NewForConfig(config)
 	}
 
-	data, err := ioutil.ReadFile(path)
+	config, err := clientcmd.BuildConfigFromFlags("", path)
 	if err != nil {
 		return nil, err
 	}
-
-	var config k8s.Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-	return k8s.NewClient(&config)
+	return kubernetes.NewForConfig(config)
 }
